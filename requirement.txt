@@ -1,0 +1,7 @@
+joblib==0.8.4
+-e git+https://github.com/benanne/Lasagne.git@4e41b68939155e7a892b5b5435d9f269a4ec6d3b#egg=Lasagne-master
+-e git+https://github.com/dnouri/nolearn.git@e9709616892ad76e3ba03d46dbbc48830a30b5dd#egg=nolearn-master
+numpy==1.9.2
+scikit-learn==0.15.2
+scipy==0.15.1
+-e git+https://github.com/Theano/Theano.git@5ff8e002333355c8fa6d1db87f139f4530f71bb5#egg=Theano-master
