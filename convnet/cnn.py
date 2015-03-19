@@ -25,7 +25,7 @@ if __name__ == "__main__":
         update_learning_rate=0.01,
         update_momentum=0.9,
 
-        regression=True,
+        regression=False,
         max_epochs=1000,
         verbose=1
         )
@@ -33,4 +33,11 @@ if __name__ == "__main__":
     import pickle
     data = pickle.load(open('./mnist.pkl','rb'))
     x_train, y_train = data[0]
+    y_train = y_train.astype("int32")
+    x_train = x_train.reshape(-1, 1, 28, 28)
+    '''
+    y_train_real = np.zeros([y_train.shape[0], 10])
+    for i, ind in enumerate(y_train):
+        y_train_real[i, ind] = 1
+    '''
     lenet5.fit(x_train, y_train)
