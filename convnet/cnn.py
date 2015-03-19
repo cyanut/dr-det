@@ -1,4 +1,5 @@
 import numpy as np
+from lasagne.nonlinearities import softmax
 from lasagne import layers
 from lasagne.updates import nesterov_momentum
 from nolearn.lasagne import NeuralNet
@@ -20,7 +21,7 @@ if __name__ == "__main__":
         conv2_num_filters=50, conv2_filter_size=(5,5), pool2_ds=(2,2),
         hidden1_num_units=500, 
         output_num_units=10, 
-        output_nonlinearity=None,
+        output_nonlinearity=softmax,
 
         update_learning_rate=0.01,
         update_momentum=0.9,
