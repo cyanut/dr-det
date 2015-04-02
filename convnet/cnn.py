@@ -6,6 +6,7 @@ from nolearn.lasagne import NeuralNet, BatchIterator
 import glob
 from itertools import cycle
 from scipy.misc import imread, imresize
+from scipy.linalg import svd
 
 #for replication
 random = np.random.RandomState(59410)
@@ -29,6 +30,7 @@ class ImageBatchIterator(BatchIterator):
             data = list(zip(X, y))
             random.shuffle(data)
             X, y = zip(*data)
+            #y=y[...,None]
 
         return super(ImageBatchIterator, self).__call__(X, y)
 
@@ -52,13 +54,25 @@ class ImageBatchIterator(BatchIterator):
         '''
         #print(Xb)
         Xb = np.array([imresize(imread(x), self.image_size).transpose(2,0,1)[:3] for x in Xb], dtype='float32')/255.0
-        Xb -= np.mean(Xb, axis=(2,3))[...,None,None]
+        x_shape = Xb.shape
+        Xb = Xb.reshape((Xb.shape[0], -1))
+        #whitening
+        Xb -= Xb.mean(axis=1)[:, None]
+        Xb /= Xb.std(axis=1)[:, None]
+        print(Xb.shape)
+        U, S, V = svd(Xb, overwrite_a=True, full_matrices=False)
+        print(U.shape)
+        #PCA whitening
+        Xb = np.dot(Xb, np.dot(U, 1/(S+0.0001)))
+        #ZCA
+        Xb = np.dot(Xb, U.T)
+        Xb = Xb.reshape(x_shape)
         return Xb, yb
 
 
 def cnn():
     image_size = (372, 372)
-    batch_size = 20
+    batch_size = 20 
     cnn = NeuralNet(
         layers = [
             ('input', layers.InputLayer),
@@ -92,14 +106,15 @@ def cnn():
         hidden1_num_units=500, 
         dropout5_p=0.5,
         hidden2_num_units=50,
-        output_num_units=3, 
-        output_nonlinearity=softmax,
+        output_num_units=3,#1 
+        output_nonlinearity=softmax,#None,
 
         update_learning_rate=0.01,
         update_momentum=0.6,
         update = nesterov_momentum,
         #update = adagrad,
 
+        #regression=True,
         regression=False,
         max_epochs=240,
         verbose=1,
@@ -146,4 +161,4 @@ if __name__ == "__main__":
         net.load_weights_from(sys.argv[1])
     net.fit(x, y)
     print("saving weights ...")
-    net.save_weights_to("./2015-03-24-equal.weights")
+    net.save_weights_to("./2015-03-25-equal-regression.weights")
