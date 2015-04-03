@@ -7,12 +7,13 @@ import glob
 from itertools import cycle
 from scipy.misc import imread, imresize
 from scipy.linalg import svd
-
+import multiprocessing
 #for replication
 random = np.random.RandomState(59410)
 
 
 class ImageBatchIterator(BatchIterator):
+
 
     def __init__(self, batch_size, image_size, epoch_shuffle = True):
         '''
@@ -23,29 +24,41 @@ class ImageBatchIterator(BatchIterator):
         super(ImageBatchIterator, self).__init__(batch_size)
         self.image_size = image_size
         self.epoch_shuffle = epoch_shuffle
+        self.data_queue = multiprocessing.Queue()
+        self.iter_process = None
 
     def __call__(self, X, y=None):
+        print("hi")
         if self.epoch_shuffle:
             #shuffle X and y in unison: zip, shuffle, then unzip
             data = list(zip(X, y))
             random.shuffle(data)
             X, y = zip(*data)
             #y=y[...,None]
+            self.iter_process = multiprocessing.Process(target=self._iter, args=(X, y))
+            self.iter_process.daemon = True
+            
+            self.iter_process.start()
 
         return super(ImageBatchIterator, self).__call__(X, y)
 
 
-    def __iter__(self):
-        n_samples = len(self.X)
+    def _iter(self, X, y):
+        n_samples = len(X)
         bs = self.batch_size
         for i in range((n_samples + bs - 1) // bs):
             sl = slice(i * bs, (i + 1) * bs)
-            Xb = self.X[sl]
-            if self.y is not None:
-                yb = self.y[sl]
+            Xb = X[sl]
+            if y is not None:
+                yb = y[sl]
             else:
                 yb = None
-            yield self.transform(Xb, yb)
+            self.data_queue.put(self.transform(Xb, yb))
+        self.data_queue.join()
+
+    def __iter__(self):
+        print(self.data_queue.qsize())
+        yield self.data_queue.get()
 
     def transform(self, Xb, yb):
         '''
@@ -54,11 +67,12 @@ class ImageBatchIterator(BatchIterator):
         '''
         #print(Xb)
         Xb = np.array([imresize(imread(x), self.image_size).transpose(2,0,1)[:3] for x in Xb], dtype='float32')/255.0
+        '''
         x_shape = Xb.shape
         Xb = Xb.reshape((Xb.shape[0], -1))
-        #whitening
         Xb -= Xb.mean(axis=1)[:, None]
         Xb /= Xb.std(axis=1)[:, None]
+        #whitening
         print(Xb.shape)
         U, S, V = svd(Xb, overwrite_a=True, full_matrices=False)
         print(U.shape)
@@ -67,6 +81,8 @@ class ImageBatchIterator(BatchIterator):
         #ZCA
         Xb = np.dot(Xb, U.T)
         Xb = Xb.reshape(x_shape)
+        '''
+
         return Xb, yb
 
 
