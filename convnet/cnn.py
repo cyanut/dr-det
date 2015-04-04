@@ -7,7 +7,11 @@ import glob
 from itertools import cycle
 from scipy.misc import imread, imresize
 from scipy.linalg import svd
+from scipy.ndimage.interpolation import rotate
 import multiprocessing
+import os.path
+import csv
+
 #for replication
 random = np.random.RandomState(59410)
 
@@ -15,32 +19,45 @@ random = np.random.RandomState(59410)
 class ImageBatchIterator(BatchIterator):
 
 
-    def __init__(self, batch_size, image_size, epoch_shuffle = True):
+    def __init__(self, images_by_class, n_per_category, image_size, batch_size):
         '''
-            batch_size: int
+            images_by_class: a list of list of image paths arranged by class, so that images_by_class[n] contains all images of class n
+            n_per_category: number of samples per category after augmentation in each epoch
             image_size: tuple of (int, int). Images will be force resized to image_size.
-            epoch_shuffle: bool. whether to shuffle data at each epoch.
+            batch_size: int
         '''
         super(ImageBatchIterator, self).__init__(batch_size)
         self.image_size = image_size
-        self.epoch_shuffle = epoch_shuffle
         self.data_queue = multiprocessing.Queue()
         self.iter_process = None
+        self.images_by_class = images_by_class  
+        self.n_per_category = n_per_category
 
-    def __call__(self, X, y=None):
-        print("hi")
-        if self.epoch_shuffle:
-            #shuffle X and y in unison: zip, shuffle, then unzip
-            data = list(zip(X, y))
-            random.shuffle(data)
-            X, y = zip(*data)
-            #y=y[...,None]
-            self.iter_process = multiprocessing.Process(target=self._iter, args=(X, y))
-            self.iter_process.daemon = True
-            
-            self.iter_process.start()
+    def __call__(self, X=None, y=None):
+        #Create equal samples across class for the epoch
+        #parameters are useless, only there to make nolearn happy
+        data = []
+        for img_class, img_list in enumerate(self.images_by_class):
+            n_img = len(img_list)
+            n_round = self.n_per_category // n_img
+            n_remainder = self.n_per_category % n_img
+            this_img_list = img_list * n_round + \
+                list(random.choice(img_list, n_remainder, replace=False))
+            data += [(x, img_class) for x in this_img_list]
 
-        return super(ImageBatchIterator, self).__call__(X, y)
+
+        random.shuffle(data)
+        X, y = zip(*data)
+        #y=y[...,None]
+        self.iter_process = multiprocessing.Process(target=self._iter, args=(X, y))
+        self.iter_process.daemon = True
+        
+        self.iter_process.start()
+
+        self.X = X
+        self.y = y
+
+        return self
 
 
     def _iter(self, X, y):
@@ -57,36 +74,48 @@ class ImageBatchIterator(BatchIterator):
         self.data_queue.join()
 
     def __iter__(self):
-        print(self.data_queue.qsize())
         yield self.data_queue.get()
+        
+
 
     def transform(self, Xb, yb):
         '''
             Xb: list of image file paths.
             yb: numpy array of labels.
         '''
-        #print(Xb)
-        Xb = np.array([imresize(imread(x), self.image_size).transpose(2,0,1)[:3] for x in Xb], dtype='float32')/255.0
-        '''
-        x_shape = Xb.shape
-        Xb = Xb.reshape((Xb.shape[0], -1))
-        Xb -= Xb.mean(axis=1)[:, None]
-        Xb /= Xb.std(axis=1)[:, None]
-        #whitening
-        print(Xb.shape)
-        U, S, V = svd(Xb, overwrite_a=True, full_matrices=False)
-        print(U.shape)
-        #PCA whitening
-        Xb = np.dot(Xb, np.dot(U, 1/(S+0.0001)))
-        #ZCA
-        Xb = np.dot(Xb, U.T)
-        Xb = Xb.reshape(x_shape)
-        '''
+        Xb = np.array([imresize(imread(x), self.image_size).transpose(2,0,1)[:3] for x in Xb], dtype='float32')
 
+        for i in range(Xb.shape[0]):
+            is_flip = bool(random.choice(2))
+            if is_flip:
+                Xb[i] = Xb[i][:,::-1,...]
+            angle = 180 * random.rand()
+            Xb[i] = rotate(Xb[i], angle, axes=(2,1), reshape = False)
+
+        #probably not very useful after normalization
+        rgb_shift = 128
+        delta = random.rand(Xb.shape[0],3,1,1) * rgb_shift
+        Xb += delta
+        Xb = Xb.clip(0,255)
+
+
+        Xb -= Xb.mean(axis=(2,3))[...,None,None]
+        Xb /= Xb.std(axis=(2,3))[...,None,None]
+        
+        '''
+        Xb = imgs.astype("uint8")
+        for i in range(Xb.shape[0]):
+            mask = cv2.Canny(Xb[i], 50, 150)
+            mask = cv2.copyMakeBorder(mask, 1, 1, 1, 1,cv2.BORDER_REPLICATE)
+            ret, rect = cv2.floodFill(Xb[i], mask, (0,0), 0)
+            ret, rect = cv2.floodFill(Xb[i], mask, (0,imgs.shape[2]-1), 0)
+            ret, rect = cv2.floodFill(Xb[i], mask, (imgs.shape[1]-1,0), 0)
+            ret, rect = cv2.floodFill(Xb[i], mask, (imgs.shape[1]-1,imgs.shape[2]-1), 0)
+        '''
         return Xb, yb
 
 
-def cnn():
+def cnn(train_iterator, test_iterator):
     image_size = (372, 372)
     batch_size = 20 
     cnn = NeuralNet(
@@ -140,41 +169,39 @@ def cnn():
     return cnn
 
 
+def get_data_by_class(label_dic):
+    '''
+    label_dic: a dictionary of {image_path: label}, where labels are int in range(n_class).
+    return: a list of lists, where each list contains all the images for one class.
+    '''
+    n_class = int(max(label_dic.values()) + 1)
+    imgs_by_class = []
+    for i in range(n_class):
+        imgs_by_class.append([])
+    for f, l in label_dic.items():
+        imgs_by_class[l].append(f)
+    return imgs_by_class
+
+
+def get_dr_data(img_glob, csv_path):
+    prefix = os.path.dirname(img_glob)
+    postfix = os.path.splitext(img_glob)[1]
+    label_file = csv.reader(open(csv_path,'r'))
+    #skip csv title
+    label_file.next()
+    label_dic = {os.path.join(prefix, "{}{}".format(x[0],postfix)):int(x[1]) for x in label_file}
+    label_dic = {x: label_dic[x] for x in glob.glob(img_glob)}
+
+    return get_data_by_class(label_dic)
+
 
 if __name__ == "__main__":
 
-    import pickle
-    import glob
-    import csv
-    import re
-    import sys
 
-    prefix = '/tmp/train-372-classified/'
-    postfix = '.png'
-    '''
-    train_x = np.array(glob.glob('{}*{}'.format(prefix, postfix)))
-    label_file = csv.reader(open('../../trainLabels.csv','r'))
-    #skip title
-    label_file.next()
-    label_dic = {x[0]:int(x[1]) for x in label_file}
-    train_x_fmt = [x[len(prefix):-len(postfix)] for x in train_x]
-    train_y = np.array([label_dic[x] for x in train_x_fmt]).astype("int32")
-    print(train_y)
-    '''
-    n_per_category = 2400
-    x = []
-    y = []
-    for i in range(3):
-        x_cat = glob.glob(prefix + str(i) + "/*.png")
-        random.shuffle(x_cat)
-        x_cat = x_cat[:n_per_category]
-        y += [i] * len(x_cat)
-        x += x_cat
-    x = np.array(x)
-    y = np.array(y, dtype="int32")
     net = cnn()
     if len(sys.argv) > 1:
         net.load_weights_from(sys.argv[1])
     net.fit(x, y)
     print("saving weights ...")
     net.save_weights_to("./2015-03-25-equal-regression.weights")
+    '''
