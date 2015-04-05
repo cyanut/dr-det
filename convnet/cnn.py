@@ -1,3 +1,4 @@
+from __future__ import print_function
 import numpy as np
 from lasagne.nonlinearities import softmax
 from lasagne import layers
@@ -5,26 +6,60 @@ from lasagne.updates import nesterov_momentum,adagrad
 from nolearn.lasagne import NeuralNet, BatchIterator
 import glob
 from itertools import cycle
-from scipy.misc import imread, imresize
+from scipy.misc import imread
 from scipy.linalg import svd
 from scipy.ndimage.interpolation import rotate
+from scipy.ndimage import zoom
 import multiprocessing
 import os.path
 import csv
+import time
+import struct
+try:
+    import cPickle as pickle
+except:
+    import pickle
 
 #for replication
 random = np.random.RandomState(59410)
+
+def fun(f,q_in,q_out):
+    while True:
+        i,x = q_in.get()
+        if i is None:
+            break
+        q_out.put((i,f(x)))
+
+def parmap(f, X, nprocs = multiprocessing.cpu_count()):
+    q_in   = multiprocessing.Queue(1)
+    q_out  = multiprocessing.Queue()
+
+    proc = [multiprocessing.Process(target=fun,args=(f,q_in,q_out)) for _ in range(nprocs)]
+    for p in proc:
+        p.daemon = True
+        p.start()
+
+    sent = [q_in.put((i,x)) for i,x in enumerate(X)]
+    [q_in.put((None,None)) for _ in range(nprocs)]
+    res = [q_out.get() for _ in range(len(sent))]
+
+    [p.join() for p in proc]
+
+    return [x for i,x in sorted(res)]
 
 
 class ImageBatchIterator(BatchIterator):
 
 
-    def __init__(self, images_by_class, n_per_category, image_size, batch_size):
+    def __init__(self, images_by_class, n_per_category, image_size, batch_size, img_transform_funcs=[], batch_transform_funcs=[], is_parallel=False):
         '''
             images_by_class: a list of list of image paths arranged by class, so that images_by_class[n] contains all images of class n
             n_per_category: number of samples per category after augmentation in each epoch
             image_size: tuple of (int, int). Images will be force resized to image_size.
             batch_size: int
+            img_transform_funcs: a list of transform functions performed on each image, function takes arguments of (img, random) where img is a numpy array of (x, y, n_channel), random is an instance of np.random.RandomState.
+            batch_transform_funcs: a list of transform functions performed on each minibatch. The function takes arguments of (Xb, yb).
+            is_parallel: Whether img_transform_funcs are performed in parallel. May increase performance if transform functions take more than 0.1s to complete per image.
         '''
         super(ImageBatchIterator, self).__init__(batch_size)
         self.image_size = image_size
@@ -32,6 +67,9 @@ class ImageBatchIterator(BatchIterator):
         self.iter_process = None
         self.images_by_class = images_by_class  
         self.n_per_category = n_per_category
+        self.batch_transform_funcs = batch_transform_funcs
+        self.img_transform_funcs = img_transform_funcs
+        self.is_parallel = is_parallel
 
     def __call__(self, X=None, y=None):
         #Create equal samples across class for the epoch
@@ -50,7 +88,7 @@ class ImageBatchIterator(BatchIterator):
         X, y = zip(*data)
         #y=y[...,None]
         self.iter_process = multiprocessing.Process(target=self._iter, args=(X, y))
-        self.iter_process.daemon = True
+        #self.iter_process.daemon = True
         
         self.iter_process.start()
 
@@ -70,49 +108,102 @@ class ImageBatchIterator(BatchIterator):
                 yb = y[sl]
             else:
                 yb = None
+
             self.data_queue.put(self.transform(Xb, yb))
         self.data_queue.join()
 
     def __iter__(self):
         yield self.data_queue.get()
         
-
-
+    
     def transform(self, Xb, yb):
         '''
             Xb: list of image file paths.
             yb: numpy array of labels.
         '''
-        Xb = np.array([imresize(imread(x), self.image_size).transpose(2,0,1)[:3] for x in Xb], dtype='float32')
-
-        for i in range(Xb.shape[0]):
-            is_flip = bool(random.choice(2))
-            if is_flip:
-                Xb[i] = Xb[i][:,::-1,...]
-            angle = 180 * random.rand()
-            Xb[i] = rotate(Xb[i], angle, axes=(2,1), reshape = False)
-
-        #probably not very useful after normalization
-        rgb_shift = 128
-        delta = random.rand(Xb.shape[0],3,1,1) * rgb_shift
-        Xb += delta
-        Xb = Xb.clip(0,255)
-
-
-        Xb -= Xb.mean(axis=(2,3))[...,None,None]
-        Xb /= Xb.std(axis=(2,3))[...,None,None]
+        def _mp_transform(img):
+            random = np.random.RandomState(struct.unpack('I',os.urandom(4))[0])
+            
+            for i, f in enumerate(self.img_transform_funcs):
+                t = time.time()
+                img = f(img, random)
+                print('step', i, ":", time.time() -t)
+            return img
         
-        '''
-        Xb = imgs.astype("uint8")
-        for i in range(Xb.shape[0]):
-            mask = cv2.Canny(Xb[i], 50, 150)
-            mask = cv2.copyMakeBorder(mask, 1, 1, 1, 1,cv2.BORDER_REPLICATE)
-            ret, rect = cv2.floodFill(Xb[i], mask, (0,0), 0)
-            ret, rect = cv2.floodFill(Xb[i], mask, (0,imgs.shape[2]-1), 0)
-            ret, rect = cv2.floodFill(Xb[i], mask, (imgs.shape[1]-1,0), 0)
-            ret, rect = cv2.floodFill(Xb[i], mask, (imgs.shape[1]-1,imgs.shape[2]-1), 0)
-        '''
+        t = time.time()
+        if self.is_parallel:
+            Xb = parmap(_mp_transform, Xb)
+        else:
+            Xb = map(_mp_transform, Xb)
+        print("map time", time.time() -t)
+        t1 = time.time()
+        Xb = np.array(Xb).transpose(0,3,1,2)
+        print("transpose time", time.time() -t1)
+        for f in self.batch_transform_funcs:
+            Xb, yb = f(Xb, yb)
+
+        print("minibatch process time:", time.time() -t)
         return Xb, yb
+
+
+#transform functions and functionals
+def img_load(img, random):
+    return imread(img).astype('float32')
+
+
+def img_resize(output_size, transform_type="crop"):
+    '''
+        A functional returning a size transform function. 
+        output_size: tuple of (int, int). The resulting size of the image.
+        transform_type: "crop" or "resize". 
+    '''
+    def _img_resize(img, random):
+        input_size = img.shape
+        if transform_type == "crop":
+            size_diff = [x - y for x,y in zip(input_size, output_size)]
+            start_coord = [random.randint(x) for x in size_diff]
+            end_coord = [x + y for x,y in zip(start_coord, output_size)]
+            img = img[start_coord[0]:end_coord[0], start_coord[1]:end_coord[1]]
+        elif transform_type == "resize":
+            zoom_factors = [1,1] + [float(x) / y for x,y in zip(input_size, output_size)]
+            img = zoom(Xb, zoom_factors)
+        return img
+    return _img_resize
+
+def img_flip(chance=0.5):
+    def _img_flip(img, random):
+        if bool(random.choice(2, p=[1-chance, chance])):
+            return np.flipud(img)
+        else:
+            return img
+    return _img_flip
+
+def img_rotate(angle=360):
+    def _img_rotate(img, random):
+        rot_angle = angle * random.rand()
+        return rotate(img, rot_angle, axes=(1,0), reshape = False, cval=img[0,0,0])
+    return _img_rotate
+
+def img_rot90(chance=[.25,.25,.25,.25]):
+    def _img_rot90(img, random):
+        k = random.choice(4, p=chance)
+        return np.rot90(img, k)
+    return _img_rot90
+
+
+def rgb_shift(Xb, yb):
+    rgb_shift = 128
+    delta = random.rand(Xb.shape[0],Xb.shape[1],1,1) * rgb_shift
+    Xb += delta
+    Xb = Xb.clip(0,255)
+    return Xb, yb
+
+def zmuv_normalization(Xb, yb):
+    Xb -= Xb.mean(axis=(2,3))[...,None,None]
+    Xb /= Xb.std(axis=(2,3))[...,None,None]
+    return Xb, yb
+
+
 
 
 def cnn(train_iterator, test_iterator):
@@ -197,11 +288,39 @@ def get_dr_data(img_glob, csv_path):
 
 if __name__ == "__main__":
 
+    data = get_dr_data("/tmp/train-400/*.png", "../../trainLabels.csv")
+    for x in data:
+        random.shuffle(x)
+    val_data_size = 50
+    val_data = [x[:val_data_size] for x in data]
+    train_data = [x[val_data_size:] for x in data]
+    img_size = (372, 372)
+    train_iter = ImageBatchIterator(\
+            train_data,
+            n_per_category = 2000,
+            batch_size = 30,
+            image_size = img_size,
+            img_transform_funcs = [img_load,
+                                   img_rot90(),
+                                   img_flip(),
+                                   img_resize(output_size=img_size)],
+            batch_transform_funcs = [],
+            )
 
-    net = cnn()
+    val_iter = ImageBatchIterator(\
+            val_data,
+            n_per_category = val_data_size,
+            batch_size = 30,
+            image_size = img_size,
+            img_transform_funcs = [img_load,
+                                   img_resize(output_size=img_size)]
+            batch_transform_funcs=[],
+            )
+    
+
+    net = cnn(train_iter, val_iter)
     if len(sys.argv) > 1:
         net.load_weights_from(sys.argv[1])
     net.fit(x, y)
     print("saving weights ...")
-    net.save_weights_to("./2015-03-25-equal-regression.weights")
-    '''
+    pickle.dump(open("test.pkl", cnn))
