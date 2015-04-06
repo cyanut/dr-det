@@ -87,6 +87,8 @@ class ImageBatchIterator(BatchIterator):
         random.shuffle(data)
         X, y = zip(*data)
         #y=y[...,None]
+        if self.iter_process is not None:
+            self.iter_process.join()
         self.iter_process = multiprocessing.Process(target=self._iter, args=(X, y))
         #self.iter_process.daemon = True
         
@@ -110,10 +112,27 @@ class ImageBatchIterator(BatchIterator):
                 yb = None
 
             self.data_queue.put(self.transform(Xb, yb))
-        self.data_queue.join()
+        self.data_queue.put((None, None))
+        #print("hi from child, q =", self.data_queue.qsize())
+        self.data_queue.close()
+        #print("queue close")
+        self.data_queue.join_thread()
+        #print("join thread")
+        return True
 
     def __iter__(self):
-        yield self.data_queue.get()
+        return self
+
+    def next(self):
+        #print("iter!")
+        res = self.data_queue.get()
+        #print(self.data_queue.qsize())
+        if res[0] is None and res[1] is None:
+            #print("hi")
+            self.iter_process.join()
+            raise StopIteration
+        else:
+            return res
         
     
     def transform(self, Xb, yb):
@@ -127,7 +146,7 @@ class ImageBatchIterator(BatchIterator):
             for i, f in enumerate(self.img_transform_funcs):
                 t = time.time()
                 img = f(img, random)
-                print('step', i, ":", time.time() -t)
+                #print('step', i, ":", time.time() -t)
             return img
         
         t = time.time()
@@ -135,14 +154,14 @@ class ImageBatchIterator(BatchIterator):
             Xb = parmap(_mp_transform, Xb)
         else:
             Xb = map(_mp_transform, Xb)
-        print("map time", time.time() -t)
+        #print("map time", time.time() -t)
         t1 = time.time()
         Xb = np.array(Xb).transpose(0,3,1,2)
-        print("transpose time", time.time() -t1)
+        #print("transpose time", time.time() -t1)
         for f in self.batch_transform_funcs:
             Xb, yb = f(Xb, yb)
 
-        print("minibatch process time:", time.time() -t)
+        #print("minibatch process time:", time.time() -t)
         return Xb, yb
 
 
@@ -285,6 +304,11 @@ def get_dr_data(img_glob, csv_path):
 
     return get_data_by_class(label_dic)
 
+def split_data(data, val_per_class):
+    val_data = [x[:val_per_class] for x in data]
+    train_data = [x[val_per_class:] for x in data]
+    return train_data, val_data
+
 
 if __name__ == "__main__":
 
@@ -292,8 +316,7 @@ if __name__ == "__main__":
     for x in data:
         random.shuffle(x)
     val_data_size = 50
-    val_data = [x[:val_data_size] for x in data]
-    train_data = [x[val_data_size:] for x in data]
+    train_data, val_data = split_data(data, val_data_size)
     img_size = (372, 372)
     train_iter = ImageBatchIterator(\
             train_data,
@@ -313,7 +336,7 @@ if __name__ == "__main__":
             batch_size = 30,
             image_size = img_size,
             img_transform_funcs = [img_load,
-                                   img_resize(output_size=img_size)]
+                                   img_resize(output_size=img_size)],
             batch_transform_funcs=[],
             )
     
