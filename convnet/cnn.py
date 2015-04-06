@@ -2,6 +2,13 @@ from __future__ import print_function
 import numpy as np
 from lasagne.nonlinearities import softmax
 from lasagne import layers
+try:
+    from lasagne.layers.cuda_convnet import Conv2DCCLayer as Conv2DLayer
+    from lasagne.layers.cuda_convnet import MaxPool2DCCLayer as MaxPool2DLayer
+except ImportError:
+    Conv2DLayer = layers.Conv2DLayer
+    MaxPool2DLayer = layers.MaxPool2DLayer
+
 from lasagne.updates import nesterov_momentum,adagrad
 from nolearn.lasagne import NeuralNet, BatchIterator
 import glob
@@ -15,6 +22,7 @@ import os.path
 import csv
 import time
 import struct
+import sys
 try:
     import cPickle as pickle
 except:
@@ -63,7 +71,7 @@ class ImageBatchIterator(BatchIterator):
         '''
         super(ImageBatchIterator, self).__init__(batch_size)
         self.image_size = image_size
-        self.data_queue = multiprocessing.Queue()
+        self.data_queue = multiprocessing.Queue(20)
         self.iter_process = None
         self.images_by_class = images_by_class  
         self.n_per_category = n_per_category
@@ -231,50 +239,50 @@ def cnn(train_iterator, test_iterator):
     cnn = NeuralNet(
         layers = [
             ('input', layers.InputLayer),
-            ('conv1', layers.Conv2DLayer),
-            ('pool1', layers.MaxPool2DLayer),
-            ('dropout1', layers.DropoutLayer),
-            ('conv2', layers.Conv2DLayer),
-            ('pool2', layers.MaxPool2DLayer),
-            ('dropout2', layers.DropoutLayer),
-            ('conv3', layers.Conv2DLayer),
-            ('pool3', layers.MaxPool2DLayer),
-            ('dropout3', layers.DropoutLayer),
-            ('conv4', layers.Conv2DLayer),
-            ('pool4', layers.MaxPool2DLayer),
-            ('dropout4', layers.DropoutLayer),
+            ('conv1', Conv2DLayer),
+            ('pool1', MaxPool2DLayer),
+            #('dropout1', layers.DropoutLayer),
+            ('conv2', Conv2DLayer),
+            ('pool2', MaxPool2DLayer),
+            #('dropout2', layers.DropoutLayer),
+            ('conv3', Conv2DLayer),
+            ('pool3', MaxPool2DLayer),
+            #('dropout3', layers.DropoutLayer),
+            ('conv4', Conv2DLayer),
+            ('pool4', MaxPool2DLayer),
+            #('dropout4', layers.DropoutLayer),
             ('hidden1', layers.DenseLayer),
-            ('dropout5', layers.DropoutLayer),
+            #('dropout5', layers.DropoutLayer),
             ('hidden2', layers.DenseLayer),
             ('output', layers.DenseLayer),
             ],
         input_shape=(None, 3, image_size[0], image_size[1]),
         conv1_num_filters=16, conv1_filter_size=(5,5), pool1_ds=(4,4),
-        dropout1_p=0.1,
-        conv2_num_filters=48, conv2_filter_size=(5,5), pool2_ds=(4,4),
-        dropout2_p=0.1,
-        conv3_num_filters=144, conv3_filter_size=(3,3), pool3_ds=(2,2),
-        dropout3_p=0.2,
-        conv4_num_filters=432, conv4_filter_size=(3,3), pool4_ds=(2,2),
-        dropout4_p=0.3,
-        #shape after conv layers: 432*4*4
+        #dropout1_p=0.1,
+        conv2_num_filters=64, conv2_filter_size=(5,5), pool2_ds=(4,4),
+        #dropout2_p=0.1,
+        conv3_num_filters=128, conv3_filter_size=(3,3), pool3_ds=(2,2),
+        #dropout3_p=0.2,
+        conv4_num_filters=128, conv4_filter_size=(3,3), pool4_ds=(2,2),
+        #dropout4_p=0.3,
+        #shape after conv layers: 128*4*4
         hidden1_num_units=500, 
-        dropout5_p=0.5,
+        #dropout5_p=0.5,
         hidden2_num_units=50,
-        output_num_units=3,#1 
+        output_num_units=5,#1 
         output_nonlinearity=softmax,#None,
 
         update_learning_rate=0.01,
-        update_momentum=0.6,
-        update = nesterov_momentum,
-        #update = adagrad,
+        #update_momentum=0.6,
+        #update = nesterov_momentum,
+        update = adagrad,
 
         #regression=True,
         regression=False,
         max_epochs=240,
         verbose=1,
-        batch_iterator_train=ImageBatchIterator(batch_size=batch_size, image_size=image_size),
-        batch_iterator_test=ImageBatchIterator(batch_size=batch_size, image_size=image_size),
+        batch_iterator_train=train_iterator,
+        batch_iterator_test=test_iterator,
         )
     return cnn
 
@@ -321,7 +329,7 @@ if __name__ == "__main__":
     train_iter = ImageBatchIterator(\
             train_data,
             n_per_category = 2000,
-            batch_size = 30,
+            batch_size = 25,
             image_size = img_size,
             img_transform_funcs = [img_load,
                                    img_rot90(),
@@ -333,7 +341,7 @@ if __name__ == "__main__":
     val_iter = ImageBatchIterator(\
             val_data,
             n_per_category = val_data_size,
-            batch_size = 30,
+            batch_size = 25,
             image_size = img_size,
             img_transform_funcs = [img_load,
                                    img_resize(output_size=img_size)],
@@ -344,6 +352,6 @@ if __name__ == "__main__":
     net = cnn(train_iter, val_iter)
     if len(sys.argv) > 1:
         net.load_weights_from(sys.argv[1])
-    net.fit(x, y)
+    net.fit(None, None)
     print("saving weights ...")
-    pickle.dump(open("test.pkl", cnn))
+    net.save_weights_to("test.weights")
