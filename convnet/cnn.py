@@ -30,7 +30,10 @@ except:
 
 #for replication
 random = np.random.RandomState(59410)
+random = np.random.RandomState(42)
 
+
+#the below two are funcs for parallel processing since multiprocessing.Pool.map sucks
 def fun(f,q_in,q_out):
     while True:
         i,x = q_in.get()
@@ -54,6 +57,112 @@ def parmap(f, X, nprocs = multiprocessing.cpu_count()):
     [p.join() for p in proc]
 
     return [x for i,x in sorted(res)]
+
+class ansi:
+    BLUE = '\033[94m'
+    GREEN = '\033[32m'
+    ENDC = '\033[0m'
+
+
+class DRNeuralNet(NeuralNet):
+
+    '''
+    def __init__(self, *args, **kargs):
+        return super(DRNeuralNet, self).__init__(*args, **kargs)
+    '''
+
+
+    def fit(self):
+        self.initialize()
+        try:
+            self.train_loop()
+        except KeyboardInterrupt:
+            pass
+        return self
+
+
+    #use our own train loop since we gonna mess up a lot with it
+    def train_loop(self):
+
+        on_epoch_finished = self.on_epoch_finished
+        if not isinstance(on_epoch_finished, (list, tuple)):
+            on_epoch_finished = [on_epoch_finished]
+
+        on_training_finished = self.on_training_finished
+        if not isinstance(on_training_finished, (list, tuple)):
+            on_training_finished = [on_training_finished]
+
+        epoch = 0
+        info = None
+        best_valid_loss = np.inf
+        best_train_loss = np.inf
+
+        if self.verbose:
+            print("""
+ Epoch  |  Train loss  |  Valid loss  |  Train / Val  |  Valid acc  |  Dur
+--------|--------------|--------------|---------------|-------------|-------\
+""")
+
+        while epoch < self.max_epochs:
+            epoch += 1
+
+            train_losses = []
+            valid_losses = []
+            valid_accuracies = []
+
+            t0 = time.time()
+
+            for Xb, yb in self.batch_iterator_train():
+                batch_train_loss = self.train_iter_(Xb, yb)
+                train_losses.append(batch_train_loss)
+
+            for Xb, yb in self.batch_iterator_test():
+                batch_valid_loss, accuracy = self.eval_iter_(Xb, yb)
+                valid_losses.append(batch_valid_loss)
+                valid_accuracies.append(accuracy)
+
+            avg_train_loss = np.mean(train_losses)
+            avg_valid_loss = np.mean(valid_losses)
+            avg_valid_accuracy = np.mean(valid_accuracies)
+
+            if avg_train_loss < best_train_loss:
+                best_train_loss = avg_train_loss
+            if avg_valid_loss < best_valid_loss:
+                best_valid_loss = avg_valid_loss
+
+            if self.verbose:
+                best_train = best_train_loss == avg_train_loss
+                best_valid = best_valid_loss == avg_valid_loss
+                print(" {:>5}  |  {}{:>10.6f}{}  |  {}{:>10.6f}{}  "
+                      "|  {:>11.6f}  |  {:>9}  |  {:>3.1f}s".format(
+                          epoch,
+                          ansi.BLUE if best_train else "",
+                          avg_train_loss,
+                          ansi.ENDC if best_train else "",
+                          ansi.GREEN if best_valid else "",
+                          avg_valid_loss,
+                          ansi.ENDC if best_valid else "",
+                          avg_train_loss / avg_valid_loss,
+                          "{:.2f}%".format(avg_valid_accuracy * 100)
+                          if not self.regression else "",
+                          time.time() - t0,
+                          ))
+
+            info = dict(
+                epoch=epoch,
+                train_loss=avg_train_loss,
+                valid_loss=avg_valid_loss,
+                valid_accuracy=avg_valid_accuracy,
+                )
+            self.train_history_.append(info)
+            try:
+                for func in on_epoch_finished:
+                    func(self, self.train_history_)
+            except StopIteration:
+                break
+
+        for func in on_training_finished:
+            func(self, self.train_history_)
 
 
 class ImageBatchIterator(BatchIterator):
@@ -79,7 +188,7 @@ class ImageBatchIterator(BatchIterator):
         self.img_transform_funcs = img_transform_funcs
         self.is_parallel = is_parallel
 
-    def __call__(self, X=None, y=None):
+    def __call__(self):
         #Create equal samples across class for the epoch
         #parameters are useless, only there to make nolearn happy
         data = []
@@ -236,7 +345,7 @@ def zmuv_normalization(Xb, yb):
 def cnn(train_iterator, test_iterator):
     image_size = (372, 372)
     batch_size = 20 
-    cnn = NeuralNet(
+    cnn = DRNeuralNet(
         layers = [
             ('input', layers.InputLayer),
             ('conv1', Conv2DLayer),
@@ -352,6 +461,6 @@ if __name__ == "__main__":
     net = cnn(train_iter, val_iter)
     if len(sys.argv) > 1:
         net.load_weights_from(sys.argv[1])
-    net.fit(None, None)
+    net.fit()
     print("saving weights ...")
     net.save_weights_to("test.weights")
