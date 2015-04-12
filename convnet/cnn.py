@@ -1,5 +1,7 @@
 from __future__ import print_function
 import numpy as np
+import theano
+import theano.tensor as T
 from lasagne.nonlinearities import softmax
 from lasagne import layers
 try:
@@ -27,10 +29,10 @@ try:
     import cPickle as pickle
 except:
     import pickle
+   
 
 #for replication
 random = np.random.RandomState(59410)
-random = np.random.RandomState(42)
 
 
 #the below two are funcs for parallel processing since multiprocessing.Pool.map sucks
@@ -66,10 +68,8 @@ class ansi:
 
 class DRNeuralNet(NeuralNet):
 
-    '''
     def __init__(self, *args, **kargs):
         return super(DRNeuralNet, self).__init__(*args, **kargs)
-    '''
 
 
     def fit(self):
@@ -79,6 +79,60 @@ class DRNeuralNet(NeuralNet):
         except KeyboardInterrupt:
             pass
         return self
+
+    def _create_iter_funcs(self, layers, objective, update, input_type,
+                       output_type):
+        X = input_type('x')
+        y = output_type('y')
+        X_batch = input_type('x_batch')
+        y_batch = output_type('y_batch')
+
+        output_layer = layers['output']
+        objective_params = self._get_params_for('objective')
+        obj = objective(output_layer, **objective_params)
+        if not hasattr(obj, 'layers'):
+            # XXX breaking the Lasagne interface a little:
+            obj.layers = layers
+
+        loss_train = obj.get_loss(X_batch, y_batch)
+        loss_eval = obj.get_loss(X_batch, y_batch, deterministic=True)
+        predict_proba = output_layer.get_output(X_batch, deterministic=True)
+        if not self.regression:
+            predict = predict_proba.argmax(axis=1)
+            accuracy = T.mean(T.eq(predict, y_batch))
+        else:
+            accuracy = loss_eval
+
+        all_params = self.get_all_params()
+        update_params = self._get_params_for('update')
+        updates = update(loss_train, all_params, **update_params)
+
+        train_iter = theano.function(
+            inputs=[theano.Param(X_batch), theano.Param(y_batch)],
+            outputs=[loss_train],
+            updates=updates,
+            givens={
+                X: X_batch,
+                y: y_batch,
+                },
+            )
+        eval_iter = theano.function(
+            inputs=[theano.Param(X_batch), theano.Param(y_batch)],
+            outputs=[loss_eval, accuracy, predict],
+            givens={
+                X: X_batch,
+                y: y_batch,
+                },
+            )
+        predict_iter = theano.function(
+            inputs=[theano.Param(X_batch)],
+            outputs=predict_proba,
+            givens={
+                X: X_batch,
+                },
+            )
+
+        return train_iter, eval_iter, predict_iter
 
 
     #use our own train loop since we gonna mess up a lot with it
@@ -109,6 +163,8 @@ class DRNeuralNet(NeuralNet):
             train_losses = []
             valid_losses = []
             valid_accuracies = []
+            target_y = []
+            predict_y = []
 
             t0 = time.time()
 
@@ -117,13 +173,20 @@ class DRNeuralNet(NeuralNet):
                 train_losses.append(batch_train_loss)
 
             for Xb, yb in self.batch_iterator_test():
-                batch_valid_loss, accuracy = self.eval_iter_(Xb, yb)
+                batch_valid_loss, accuracy, predict = self.eval_iter_(Xb, yb)
                 valid_losses.append(batch_valid_loss)
                 valid_accuracies.append(accuracy)
+                target_y.append(np.array(yb))
+                predict_y.append(np.array(predict))
+                
 
+            
             avg_train_loss = np.mean(train_losses)
             avg_valid_loss = np.mean(valid_losses)
             avg_valid_accuracy = np.mean(valid_accuracies)
+            target_y = np.hstack(target_y)
+            predict_y = np.hstack(predict_y)
+            print(target_y.shape, predict_y.shape)
 
             if avg_train_loss < best_train_loss:
                 best_train_loss = avg_train_loss
@@ -154,6 +217,9 @@ class DRNeuralNet(NeuralNet):
                 valid_loss=avg_valid_loss,
                 valid_accuracy=avg_valid_accuracy,
                 )
+
+            for k, f in self.more_params["report_funcs"].items():
+                info[k] = f(predict_y, target_y)
             self.train_history_.append(info)
             try:
                 for func in on_epoch_finished:
@@ -249,7 +315,7 @@ class ImageBatchIterator(BatchIterator):
             self.iter_process.join()
             raise StopIteration
         else:
-            return res
+            return [np.array(res[0]), np.array(res[1], dtype='int32')]
         
     
     def transform(self, Xb, yb):
@@ -282,7 +348,7 @@ class ImageBatchIterator(BatchIterator):
         return Xb, yb
 
 
-#transform functions and functionals
+## transform functions and functionals ##
 def img_load(img, random):
     return imread(img).astype('float32')
 
@@ -338,7 +404,47 @@ def zmuv_normalization(Xb, yb):
     Xb -= Xb.mean(axis=(2,3))[...,None,None]
     Xb /= Xb.std(axis=(2,3))[...,None,None]
     return Xb, yb
+## end of transform funcs ##
 
+
+## report functions ##
+
+def _cat_hist(arr, n):
+    hist = np.bincount(arr)
+    if hist.shape[0] < n:
+        hist = np.hstack([hist, np.zeros(n-hist.shape[0])])
+    return hist
+
+def qkappa(predict, target):
+    #in case prediction is result of regression, round up
+    predict = np.round(predict).astype("int32")
+    n_cat = max(np.max(predict), np.max(target)) + 1
+    pred_hist = _cat_hist(predict, n_cat)
+    target_hist = _cat_hist(target, n_cat)
+    confusion_matrix = np.zeros((n_cat, n_cat))
+    for p, r in zip(predict, target):
+        confusion_matrix[p, r] += 1
+    weight_matrix = np.zeros((n_cat, n_cat))
+    for i in range(n_cat):
+        for j in range(n_cat):
+            weight_matrix[i,j] = float(i-j) / (n_cat -1)
+    weight_matrix **= 2
+    expection_matrix = np.outer(pred_hist, target_hist)
+    expection_matrix /= np.sum(expection_matrix) / np.sum(confusion_matrix)
+    qkappa = 1 - (np.sum(weight_matrix * confusion_matrix) / \
+                  np.sum(weight_matrix * expection_matrix))
+    '''
+    print("pred_hist:", pred_hist)
+    print("target_hist:", target_hist)
+    print("weight matrix")
+    print(weight_matrix)
+    print("expection matrix")
+    print(expection_matrix)
+    '''
+    print("confusion matrix")
+    print(confusion_matrix)
+    print("qkappa:", qkappa)
+    return qkappa
 
 
 
@@ -392,6 +498,7 @@ def cnn(train_iterator, test_iterator):
         verbose=1,
         batch_iterator_train=train_iterator,
         batch_iterator_test=test_iterator,
+        more_params={"report_funcs":{"qkappa":qkappa}},
         )
     return cnn
 
@@ -429,7 +536,7 @@ def split_data(data, val_per_class):
 
 if __name__ == "__main__":
 
-    data = get_dr_data("/tmp/train-400/*.png", "../../trainLabels.csv")
+    data = get_dr_data("../../train-400/*.png", "../../trainLabels.csv")
     for x in data:
         random.shuffle(x)
     val_data_size = 50
