@@ -8,7 +8,7 @@ def is_bg(i):
     #return np.max(i) < 10
     return np.sum(i) / i.size < 5
 
-def crop_img(im_pair, size=(400,400)):
+def crop_img(im_pair, size=(400,400), hist_eq=True):
     im_name_in, im_name_out = im_pair
     img = imread(im_name_in)
     l=0
@@ -39,6 +39,8 @@ def crop_img(im_pair, size=(400,400)):
         img = img[:, l:r]
         if size is not None:
             img = imresize(img, size)
+        if hist_eq:
+            img = cv2.equalizeHist(img)
         imsave(im_name_out, img)
     except:
         print()
