@@ -20,11 +20,14 @@ from scipy.linalg import svd
 from scipy.ndimage.interpolation import rotate
 from scipy.ndimage import zoom
 import multiprocessing
+import Queue
+import threading
 import os.path
 import csv
 import time
 import struct
 import sys
+
 try:
     import cPickle as pickle
 except:
@@ -68,7 +71,11 @@ class ansi:
 
 class DRNeuralNet(NeuralNet):
 
-    def __init__(self, *args, **kargs):
+    def __init__(self, report_funcs={}, *args, **kargs):
+        if not "more_params" in kargs:
+            kargs['more_params'] = {}
+        kargs['more_params']['report_funcs'] = report_funcs
+
         return super(DRNeuralNet, self).__init__(*args, **kargs)
 
 
@@ -246,7 +253,8 @@ class ImageBatchIterator(BatchIterator):
         '''
         super(ImageBatchIterator, self).__init__(batch_size)
         self.image_size = image_size
-        self.data_queue = multiprocessing.Queue(20)
+        #self.data_queue = multiprocessing.Queue(20)
+        self.data_queue = Queue.Queue(100)
         self.iter_process = None
         self.images_by_class = images_by_class  
         self.n_per_category = n_per_category
@@ -272,9 +280,8 @@ class ImageBatchIterator(BatchIterator):
         #y=y[...,None]
         if self.iter_process is not None:
             self.iter_process.join()
-        self.iter_process = multiprocessing.Process(target=self._iter, args=(X, y))
-        #self.iter_process.daemon = True
-        
+        #self.iter_process = multiprocessing.Process(target=self._iter, args=(X, y))
+        self.iter_process = threading.Thread(target=self._iter, args=(X,y))
         self.iter_process.start()
 
         self.X = X
@@ -468,7 +475,7 @@ def cnn(train_iterator, test_iterator):
             #('dropout4', layers.DropoutLayer),
             ('hidden1', layers.DenseLayer),
             #('dropout5', layers.DropoutLayer),
-            ('hidden2', layers.DenseLayer),
+            #('hidden2', layers.DenseLayer),
             ('output', layers.DenseLayer),
             ],
         input_shape=(None, 3, image_size[0], image_size[1]),
@@ -476,14 +483,14 @@ def cnn(train_iterator, test_iterator):
         #dropout1_p=0.1,
         conv2_num_filters=64, conv2_filter_size=(5,5), pool2_ds=(4,4),
         #dropout2_p=0.1,
-        conv3_num_filters=128, conv3_filter_size=(3,3), pool3_ds=(2,2),
+        conv3_num_filters=64, conv3_filter_size=(3,3), pool3_ds=(2,2),
         #dropout3_p=0.2,
-        conv4_num_filters=128, conv4_filter_size=(3,3), pool4_ds=(2,2),
+        conv4_num_filters=64, conv4_filter_size=(3,3), pool4_ds=(2,2),
         #dropout4_p=0.3,
         #shape after conv layers: 128*4*4
-        hidden1_num_units=500, 
+        hidden1_num_units=200, 
         #dropout5_p=0.5,
-        hidden2_num_units=50,
+        #hidden2_num_units=50,
         output_num_units=5,#1 
         output_nonlinearity=softmax,#None,
 
@@ -498,7 +505,7 @@ def cnn(train_iterator, test_iterator):
         verbose=1,
         batch_iterator_train=train_iterator,
         batch_iterator_test=test_iterator,
-        more_params={"report_funcs":{"qkappa":qkappa}},
+        report_funcs={"qkappa":qkappa},
         )
     return cnn
 

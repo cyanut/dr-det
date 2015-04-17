@@ -1,6 +1,6 @@
 from __future__ import print_function
 import numpy as np
-from scipy.misc import imread, imsave
+from scipy.misc import imread, imsave, imresize
 import cv2
 
 def is_bg(i):
@@ -8,7 +8,7 @@ def is_bg(i):
     #return np.max(i) < 10
     return np.sum(i) / i.size < 5
 
-def crop_img(im_pair):
+def crop_img(im_pair, size=(400,400)):
     im_name_in, im_name_out = im_pair
     img = imread(im_name_in)
     l=0
@@ -36,7 +36,10 @@ def crop_img(im_pair):
         w = img.shape[0] - img_w
         img = img[int(w/2):-(w-int(w/2))]
     try:
-        imsave(im_name_out, img[:, l:r])
+        img = img[:, l:r]
+        if size is not None:
+            img = imresize(img, size)
+        imsave(im_name_out, img)
     except:
         print()
         print("save error", im_name_in)
@@ -75,5 +78,7 @@ if __name__ == "__main__":
         t = int(t)
         sys.stderr.write("\r{} of {} done in {} seconds. Estimated {} seconds left".format(done, total, t, est))
         time.sleep(1)
+    p.close()
+    p.join()
     print()
         
