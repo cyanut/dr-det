@@ -1,7 +1,5 @@
 from __future__ import print_function
 import numpy as np
-import theano
-import theano.tensor as T
 from lasagne.nonlinearities import softmax
 from lasagne import layers
 try:
@@ -12,453 +10,24 @@ except ImportError:
     MaxPool2DLayer = layers.MaxPool2DLayer
 
 from lasagne.updates import nesterov_momentum,adagrad
-from nolearn.lasagne import NeuralNet, BatchIterator
-import glob
-from itertools import cycle
-from scipy.misc import imread
-from scipy.linalg import svd
-from scipy.ndimage.interpolation import rotate
-from scipy.ndimage import zoom
-import multiprocessing
-import Queue
-import threading
-import os.path
-import csv
-import time
-import struct
+from dr_iterator import ImageBatchIterator
+from dr_iterator import img_load, img_flip, img_rot90, img_resize
+from dr_network import DRNeuralNet
+from dr_network import qkappa
+from dr_network import get_data_by_class, get_dr_data, split_data
 import sys
 
-try:
-    import cPickle as pickle
-except:
-    import pickle
    
 
 #for replication
 random = np.random.RandomState(59410)
 
 
-#the below two are funcs for parallel processing since multiprocessing.Pool.map sucks
-def fun(f,q_in,q_out):
-    while True:
-        i,x = q_in.get()
-        if i is None:
-            break
-        q_out.put((i,f(x)))
-
-def parmap(f, X, nprocs = multiprocessing.cpu_count()):
-    q_in   = multiprocessing.Queue(1)
-    q_out  = multiprocessing.Queue()
-
-    proc = [multiprocessing.Process(target=fun,args=(f,q_in,q_out)) for _ in range(nprocs)]
-    for p in proc:
-        p.daemon = True
-        p.start()
-
-    sent = [q_in.put((i,x)) for i,x in enumerate(X)]
-    [q_in.put((None,None)) for _ in range(nprocs)]
-    res = [q_out.get() for _ in range(len(sent))]
-
-    [p.join() for p in proc]
-
-    return [x for i,x in sorted(res)]
-
-class ansi:
-    BLUE = '\033[94m'
-    GREEN = '\033[32m'
-    ENDC = '\033[0m'
-
-
-class DRNeuralNet(NeuralNet):
-
-    def __init__(self, report_funcs={}, *args, **kargs):
-        if not "more_params" in kargs:
-            kargs['more_params'] = {}
-        kargs['more_params']['report_funcs'] = report_funcs
-
-        return super(DRNeuralNet, self).__init__(*args, **kargs)
-
-
-    def fit(self):
-        self.initialize()
-        try:
-            self.train_loop()
-        except KeyboardInterrupt:
-            pass
-        return self
-
-    def _create_iter_funcs(self, layers, objective, update, input_type,
-                       output_type):
-        X = input_type('x')
-        y = output_type('y')
-        X_batch = input_type('x_batch')
-        y_batch = output_type('y_batch')
-
-        output_layer = layers['output']
-        objective_params = self._get_params_for('objective')
-        obj = objective(output_layer, **objective_params)
-        if not hasattr(obj, 'layers'):
-            # XXX breaking the Lasagne interface a little:
-            obj.layers = layers
-
-        loss_train = obj.get_loss(X_batch, y_batch)
-        loss_eval = obj.get_loss(X_batch, y_batch, deterministic=True)
-        predict_proba = output_layer.get_output(X_batch, deterministic=True)
-        if not self.regression:
-            predict = predict_proba.argmax(axis=1)
-            accuracy = T.mean(T.eq(predict, y_batch))
-        else:
-            accuracy = loss_eval
-
-        all_params = self.get_all_params()
-        update_params = self._get_params_for('update')
-        updates = update(loss_train, all_params, **update_params)
-
-        train_iter = theano.function(
-            inputs=[theano.Param(X_batch), theano.Param(y_batch)],
-            outputs=[loss_train],
-            updates=updates,
-            givens={
-                X: X_batch,
-                y: y_batch,
-                },
-            )
-        eval_iter = theano.function(
-            inputs=[theano.Param(X_batch), theano.Param(y_batch)],
-            outputs=[loss_eval, accuracy, predict],
-            givens={
-                X: X_batch,
-                y: y_batch,
-                },
-            )
-        predict_iter = theano.function(
-            inputs=[theano.Param(X_batch)],
-            outputs=predict_proba,
-            givens={
-                X: X_batch,
-                },
-            )
-
-        return train_iter, eval_iter, predict_iter
-
-
-    #use our own train loop since we gonna mess up a lot with it
-    def train_loop(self):
-
-        on_epoch_finished = self.on_epoch_finished
-        if not isinstance(on_epoch_finished, (list, tuple)):
-            on_epoch_finished = [on_epoch_finished]
-
-        on_training_finished = self.on_training_finished
-        if not isinstance(on_training_finished, (list, tuple)):
-            on_training_finished = [on_training_finished]
-
-        epoch = 0
-        info = None
-        best_valid_loss = np.inf
-        best_train_loss = np.inf
-
-        if self.verbose:
-            print("""
- Epoch  |  Train loss  |  Valid loss  |  Train / Val  |  Valid acc  |  Dur
---------|--------------|--------------|---------------|-------------|-------\
-""")
-
-        while epoch < self.max_epochs:
-            epoch += 1
-
-            train_losses = []
-            valid_losses = []
-            valid_accuracies = []
-            target_y = []
-            predict_y = []
-
-            t0 = time.time()
-
-            for Xb, yb in self.batch_iterator_train():
-                batch_train_loss = self.train_iter_(Xb, yb)
-                train_losses.append(batch_train_loss)
-
-            for Xb, yb in self.batch_iterator_test():
-                batch_valid_loss, accuracy, predict = self.eval_iter_(Xb, yb)
-                valid_losses.append(batch_valid_loss)
-                valid_accuracies.append(accuracy)
-                target_y.append(np.array(yb))
-                predict_y.append(np.array(predict))
-                
-
-            
-            avg_train_loss = np.mean(train_losses)
-            avg_valid_loss = np.mean(valid_losses)
-            avg_valid_accuracy = np.mean(valid_accuracies)
-            target_y = np.hstack(target_y)
-            predict_y = np.hstack(predict_y)
-            print(target_y.shape, predict_y.shape)
-
-            if avg_train_loss < best_train_loss:
-                best_train_loss = avg_train_loss
-            if avg_valid_loss < best_valid_loss:
-                best_valid_loss = avg_valid_loss
-
-            if self.verbose:
-                best_train = best_train_loss == avg_train_loss
-                best_valid = best_valid_loss == avg_valid_loss
-                print(" {:>5}  |  {}{:>10.6f}{}  |  {}{:>10.6f}{}  "
-                      "|  {:>11.6f}  |  {:>9}  |  {:>3.1f}s".format(
-                          epoch,
-                          ansi.BLUE if best_train else "",
-                          avg_train_loss,
-                          ansi.ENDC if best_train else "",
-                          ansi.GREEN if best_valid else "",
-                          avg_valid_loss,
-                          ansi.ENDC if best_valid else "",
-                          avg_train_loss / avg_valid_loss,
-                          "{:.2f}%".format(avg_valid_accuracy * 100)
-                          if not self.regression else "",
-                          time.time() - t0,
-                          ))
-
-            info = dict(
-                epoch=epoch,
-                train_loss=avg_train_loss,
-                valid_loss=avg_valid_loss,
-                valid_accuracy=avg_valid_accuracy,
-                )
-
-            for k, f in self.more_params["report_funcs"].items():
-                info[k] = f(predict_y, target_y)
-            self.train_history_.append(info)
-            try:
-                for func in on_epoch_finished:
-                    func(self, self.train_history_)
-            except StopIteration:
-                break
-
-        for func in on_training_finished:
-            func(self, self.train_history_)
-
-
-class ImageBatchIterator(BatchIterator):
-
-
-    def __init__(self, images_by_class, n_per_category, image_size, batch_size, img_transform_funcs=[], batch_transform_funcs=[], is_parallel=False):
-        '''
-            images_by_class: a list of list of image paths arranged by class, so that images_by_class[n] contains all images of class n
-            n_per_category: number of samples per category after augmentation in each epoch
-            image_size: tuple of (int, int). Images will be force resized to image_size.
-            batch_size: int
-            img_transform_funcs: a list of transform functions performed on each image, function takes arguments of (img, random) where img is a numpy array of (x, y, n_channel), random is an instance of np.random.RandomState.
-            batch_transform_funcs: a list of transform functions performed on each minibatch. The function takes arguments of (Xb, yb).
-            is_parallel: Whether img_transform_funcs are performed in parallel. May increase performance if transform functions take more than 0.1s to complete per image.
-        '''
-        super(ImageBatchIterator, self).__init__(batch_size)
-        self.image_size = image_size
-        #self.data_queue = multiprocessing.Queue(20)
-        self.data_queue = Queue.Queue(100)
-        self.iter_process = None
-        self.images_by_class = images_by_class  
-        self.n_per_category = n_per_category
-        self.batch_transform_funcs = batch_transform_funcs
-        self.img_transform_funcs = img_transform_funcs
-        self.is_parallel = is_parallel
-
-    def __call__(self):
-        #Create equal samples across class for the epoch
-        #parameters are useless, only there to make nolearn happy
-        data = []
-        for img_class, img_list in enumerate(self.images_by_class):
-            n_img = len(img_list)
-            n_round = self.n_per_category // n_img
-            n_remainder = self.n_per_category % n_img
-            this_img_list = img_list * n_round + \
-                list(random.choice(img_list, n_remainder, replace=False))
-            data += [(x, img_class) for x in this_img_list]
-
-
-        random.shuffle(data)
-        X, y = zip(*data)
-        #y=y[...,None]
-        if self.iter_process is not None:
-            self.iter_process.join()
-        #self.iter_process = multiprocessing.Process(target=self._iter, args=(X, y))
-        self.iter_process = threading.Thread(target=self._iter, args=(X,y))
-        self.iter_process.start()
-
-        self.X = X
-        self.y = y
-
-        return self
-
-
-    def _iter(self, X, y):
-        n_samples = len(X)
-        bs = self.batch_size
-        for i in range((n_samples + bs - 1) // bs):
-            sl = slice(i * bs, (i + 1) * bs)
-            Xb = X[sl]
-            if y is not None:
-                yb = y[sl]
-            else:
-                yb = None
-
-            self.data_queue.put(self.transform(Xb, yb))
-        self.data_queue.put((None, None))
-        #print("hi from child, q =", self.data_queue.qsize())
-        self.data_queue.close()
-        #print("queue close")
-        self.data_queue.join_thread()
-        #print("join thread")
-        return True
-
-    def __iter__(self):
-        return self
-
-    def next(self):
-        #print("iter!")
-        res = self.data_queue.get()
-        #print(self.data_queue.qsize())
-        if res[0] is None and res[1] is None:
-            #print("hi")
-            self.iter_process.join()
-            raise StopIteration
-        else:
-            return [np.array(res[0]), np.array(res[1], dtype='int32')]
-        
-    
-    def transform(self, Xb, yb):
-        '''
-            Xb: list of image file paths.
-            yb: numpy array of labels.
-        '''
-        def _mp_transform(img):
-            random = np.random.RandomState(struct.unpack('I',os.urandom(4))[0])
-            
-            for i, f in enumerate(self.img_transform_funcs):
-                t = time.time()
-                img = f(img, random)
-                #print('step', i, ":", time.time() -t)
-            return img
-        
-        t = time.time()
-        if self.is_parallel:
-            Xb = parmap(_mp_transform, Xb)
-        else:
-            Xb = map(_mp_transform, Xb)
-        #print("map time", time.time() -t)
-        t1 = time.time()
-        Xb = np.array(Xb).transpose(0,3,1,2)
-        #print("transpose time", time.time() -t1)
-        for f in self.batch_transform_funcs:
-            Xb, yb = f(Xb, yb)
-
-        #print("minibatch process time:", time.time() -t)
-        return Xb, yb
-
-
-## transform functions and functionals ##
-def img_load(img, random):
-    return imread(img).astype('float32')
-
-
-def img_resize(output_size, transform_type="crop"):
-    '''
-        A functional returning a size transform function. 
-        output_size: tuple of (int, int). The resulting size of the image.
-        transform_type: "crop" or "resize". 
-    '''
-    def _img_resize(img, random):
-        input_size = img.shape
-        if transform_type == "crop":
-            size_diff = [x - y for x,y in zip(input_size, output_size)]
-            start_coord = [random.randint(x) for x in size_diff]
-            end_coord = [x + y for x,y in zip(start_coord, output_size)]
-            img = img[start_coord[0]:end_coord[0], start_coord[1]:end_coord[1]]
-        elif transform_type == "resize":
-            zoom_factors = [1,1] + [float(x) / y for x,y in zip(input_size, output_size)]
-            img = zoom(Xb, zoom_factors)
-        return img
-    return _img_resize
-
-def img_flip(chance=0.5):
-    def _img_flip(img, random):
-        if bool(random.choice(2, p=[1-chance, chance])):
-            return np.flipud(img)
-        else:
-            return img
-    return _img_flip
-
-def img_rotate(angle=360):
-    def _img_rotate(img, random):
-        rot_angle = angle * random.rand()
-        return rotate(img, rot_angle, axes=(1,0), reshape = False, cval=img[0,0,0])
-    return _img_rotate
-
-def img_rot90(chance=[.25,.25,.25,.25]):
-    def _img_rot90(img, random):
-        k = random.choice(4, p=chance)
-        return np.rot90(img, k)
-    return _img_rot90
-
-
-def rgb_shift(Xb, yb):
-    rgb_shift = 128
-    delta = random.rand(Xb.shape[0],Xb.shape[1],1,1) * rgb_shift
-    Xb += delta
-    Xb = Xb.clip(0,255)
-    return Xb, yb
-
-def zmuv_normalization(Xb, yb):
-    Xb -= Xb.mean(axis=(2,3))[...,None,None]
-    Xb /= Xb.std(axis=(2,3))[...,None,None]
-    return Xb, yb
-## end of transform funcs ##
-
-
-## report functions ##
-
-def _cat_hist(arr, n):
-    hist = np.bincount(arr)
-    if hist.shape[0] < n:
-        hist = np.hstack([hist, np.zeros(n-hist.shape[0])])
-    return hist
-
-def qkappa(predict, target):
-    #in case prediction is result of regression, round up
-    predict = np.round(predict).astype("int32")
-    n_cat = max(np.max(predict), np.max(target)) + 1
-    pred_hist = _cat_hist(predict, n_cat)
-    target_hist = _cat_hist(target, n_cat)
-    confusion_matrix = np.zeros((n_cat, n_cat))
-    for p, r in zip(predict, target):
-        confusion_matrix[p, r] += 1
-    weight_matrix = np.zeros((n_cat, n_cat))
-    for i in range(n_cat):
-        for j in range(n_cat):
-            weight_matrix[i,j] = float(i-j) / (n_cat -1)
-    weight_matrix **= 2
-    expection_matrix = np.outer(pred_hist, target_hist)
-    expection_matrix /= np.sum(expection_matrix) / np.sum(confusion_matrix)
-    qkappa = 1 - (np.sum(weight_matrix * confusion_matrix) / \
-                  np.sum(weight_matrix * expection_matrix))
-    '''
-    print("pred_hist:", pred_hist)
-    print("target_hist:", target_hist)
-    print("weight matrix")
-    print(weight_matrix)
-    print("expection matrix")
-    print(expection_matrix)
-    '''
-    print("confusion matrix")
-    print(confusion_matrix)
-    print("qkappa:", qkappa)
-    return qkappa
-
-
-
-def cnn(train_iterator, test_iterator):
+def cnn(train_iterator, test_iterator, save_network_to=None):
     image_size = (372, 372)
     batch_size = 20 
     cnn = DRNeuralNet(
+        save_network_to=save_network_to,
         layers = [
             ('input', layers.InputLayer),
             ('conv1', Conv2DLayer),
@@ -510,37 +79,6 @@ def cnn(train_iterator, test_iterator):
     return cnn
 
 
-def get_data_by_class(label_dic):
-    '''
-    label_dic: a dictionary of {image_path: label}, where labels are int in range(n_class).
-    return: a list of lists, where each list contains all the images for one class.
-    '''
-    n_class = int(max(label_dic.values()) + 1)
-    imgs_by_class = []
-    for i in range(n_class):
-        imgs_by_class.append([])
-    for f, l in label_dic.items():
-        imgs_by_class[l].append(f)
-    return imgs_by_class
-
-
-def get_dr_data(img_glob, csv_path):
-    prefix = os.path.dirname(img_glob)
-    postfix = os.path.splitext(img_glob)[1]
-    label_file = csv.reader(open(csv_path,'r'))
-    #skip csv title
-    label_file.next()
-    label_dic = {os.path.join(prefix, "{}{}".format(x[0],postfix)):int(x[1]) for x in label_file}
-    label_dic = {x: label_dic[x] for x in glob.glob(img_glob)}
-
-    return get_data_by_class(label_dic)
-
-def split_data(data, val_per_class):
-    val_data = [x[:val_per_class] for x in data]
-    train_data = [x[val_per_class:] for x in data]
-    return train_data, val_data
-
-
 if __name__ == "__main__":
 
     data = get_dr_data("../../train-400/*.png", "../../trainLabels.csv")
@@ -559,6 +97,7 @@ if __name__ == "__main__":
                                    img_flip(),
                                    img_resize(output_size=img_size)],
             batch_transform_funcs = [],
+            rand_state = random,
             )
 
     val_iter = ImageBatchIterator(\
@@ -569,12 +108,13 @@ if __name__ == "__main__":
             img_transform_funcs = [img_load,
                                    img_resize(output_size=img_size)],
             batch_transform_funcs=[],
+            rand_state = random,
             )
     
 
-    net = cnn(train_iter, val_iter)
+    net = cnn(train_iter, val_iter, save_network_to="/tmp/test.cnn")
     if len(sys.argv) > 1:
         net.load_weights_from(sys.argv[1])
     net.fit()
     print("saving weights ...")
-    net.save_weights_to("test.weights")
+    net.save_network()
