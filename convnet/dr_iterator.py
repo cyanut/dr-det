@@ -43,13 +43,13 @@ def parmap(f, X, nprocs = multiprocessing.cpu_count()):
 class ImageBatchIterator(BatchIterator):
 
 
-    def __init__(self, images_by_class, n_per_category, image_size, batch_size, img_transform_funcs=[], batch_transform_funcs=[], is_parallel=False, rand_state=None):
+    def __init__(self, images_by_class, n_per_category, image_size, batch_size, img_transform_funcs=[], batch_transform_funcs=[], is_parallel=False):
         '''
             images_by_class: a list of list of image paths arranged by class, so that images_by_class[n] contains all images of class n
             n_per_category: number of samples per category after augmentation in each epoch
             image_size: tuple of (int, int). Images will be force resized to image_size.
             batch_size: int
-            img_transform_funcs: a list of transform functions performed on each image, function takes arguments of (img, random) where img is a numpy array of (x, y, n_channel), random is an instance of np.random.RandomState.
+            img_transform_funcs: a list of transform functions performed on each image, function takes arguments img: a numpy array of (x, y, n_channel).
             batch_transform_funcs: a list of transform functions performed on each minibatch. The function takes arguments of (Xb, yb).
             is_parallel: Whether img_transform_funcs are performed in parallel. May increase performance if transform functions take more than 0.1s to complete per image.
         '''
@@ -63,7 +63,6 @@ class ImageBatchIterator(BatchIterator):
         self.batch_transform_funcs = batch_transform_funcs
         self.img_transform_funcs = img_transform_funcs
         self.is_parallel = is_parallel
-        self.random = rand_state
 
     def __call__(self):
         #Create equal samples across class for the epoch
@@ -73,11 +72,11 @@ class ImageBatchIterator(BatchIterator):
             n_round = self.n_per_category // n_img
             n_remainder = self.n_per_category % n_img
             this_img_list = img_list * n_round + \
-                list(self.random.choice(img_list, n_remainder, replace=False))
+                list(np.random.choice(img_list, n_remainder, replace=False))
             data += [(x, img_class) for x in this_img_list]
 
 
-        self.random.shuffle(data)
+        np.random.shuffle(data)
         X, y = zip(*data)
         #y=y[...,None]
         if self.iter_process is not None:
@@ -133,21 +132,27 @@ class ImageBatchIterator(BatchIterator):
             Xb: list of image file paths.
             yb: numpy array of labels.
         '''
-        def _mp_transform(img):
+        def _mp_transform(args):
             #maybe in separate process, re-seed
-            random = np.random.RandomState(struct.unpack('I',os.urandom(4))[0])
-            
+            img, rand_seed = args
+            if not rand_seed:
+                rand_seed = struct.unpack('I',os.urandom(4))[0]
+            np.random.seed(rand_seed)
+
             for i, f in enumerate(self.img_transform_funcs):
                 t = time.time()
-                img = f(img, random)
+                img = f(img)
                 #print('step', i, ":", time.time() -t)
             return img
         
         t = time.time()
+        nprocs = multiprocessing.cpu_count()
+        rand_seeds = np.random.randint(np.iinfo(np.int32).max, size=len(Xb))
+        args = zip(Xb, rand_seeds)
         if self.is_parallel:
-            Xb = parmap(_mp_transform, Xb)
+            Xb = parmap(_mp_transform, args)
         else:
-            Xb = map(_mp_transform, Xb)
+            Xb = map(_mp_transform, args)
         #print("map time", time.time() -t)
         t1 = time.time()
         Xb = np.array(Xb).transpose(0,3,1,2)
@@ -161,7 +166,7 @@ class ImageBatchIterator(BatchIterator):
 
 
 ## transform functions and functionals ##
-def img_load(img, random):
+def img_load(img):
     return imread(img).astype('float32')
 
 
@@ -171,11 +176,11 @@ def img_resize(output_size, transform_type="crop"):
         output_size: tuple of (int, int). The resulting size of the image.
         transform_type: "crop" or "resize". 
     '''
-    def _img_resize(img, random):
+    def _img_resize(img):
         input_size = img.shape
         if transform_type == "crop":
             size_diff = [x - y for x,y in zip(input_size, output_size)]
-            start_coord = [random.randint(x) for x in size_diff]
+            start_coord = [np.random.randint(x) for x in size_diff]
             end_coord = [x + y for x,y in zip(start_coord, output_size)]
             img = img[start_coord[0]:end_coord[0], start_coord[1]:end_coord[1]]
         elif transform_type == "resize":
@@ -185,29 +190,29 @@ def img_resize(output_size, transform_type="crop"):
     return _img_resize
 
 def img_flip(chance=0.5):
-    def _img_flip(img, random):
-        if bool(random.choice(2, p=[1-chance, chance])):
+    def _img_flip(img):
+        if bool(np.random.choice(2, p=[1-chance, chance])):
             return np.flipud(img)
         else:
             return img
     return _img_flip
 
 def img_rotate(angle=360):
-    def _img_rotate(img, random):
-        rot_angle = angle * random.rand()
+    def _img_rotate(img):
+        rot_angle = angle * np.random.rand()
         return rotate(img, rot_angle, axes=(1,0), reshape = False, cval=img[0,0,0])
     return _img_rotate
 
 def img_rot90(chance=[.25,.25,.25,.25]):
-    def _img_rot90(img, random):
-        k = random.choice(4, p=chance)
+    def _img_rot90(img):
+        k = np.random.choice(4, p=chance)
         return np.rot90(img, k)
     return _img_rot90
 
 
 def rgb_shift(Xb, yb):
     rgb_shift = 128
-    delta = random.rand(Xb.shape[0],Xb.shape[1],1,1) * rgb_shift
+    delta = np.random.rand(Xb.shape[0],Xb.shape[1],1,1) * rgb_shift
     Xb += delta
     Xb = Xb.clip(0,255)
     return Xb, yb

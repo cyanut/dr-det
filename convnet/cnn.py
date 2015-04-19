@@ -1,5 +1,9 @@
 from __future__ import print_function
 import numpy as np
+
+#for replication
+np.random.seed(59410)
+
 from lasagne.nonlinearities import softmax
 from lasagne import layers
 try:
@@ -19,8 +23,6 @@ import sys
 
    
 
-#for replication
-random = np.random.RandomState(59410)
 
 
 def cnn(train_iterator, test_iterator, save_network_to=None):
@@ -83,7 +85,7 @@ if __name__ == "__main__":
 
     data = get_dr_data("../../train-400/*.png", "../../trainLabels.csv")
     for x in data:
-        random.shuffle(x)
+        np.random.shuffle(x)
     val_data_size = 50
     train_data, val_data = split_data(data, val_data_size)
     img_size = (372, 372)
@@ -97,7 +99,6 @@ if __name__ == "__main__":
                                    img_flip(),
                                    img_resize(output_size=img_size)],
             batch_transform_funcs = [],
-            rand_state = random,
             )
 
     val_iter = ImageBatchIterator(\
@@ -108,7 +109,6 @@ if __name__ == "__main__":
             img_transform_funcs = [img_load,
                                    img_resize(output_size=img_size)],
             batch_transform_funcs=[],
-            rand_state = random,
             )
     
 

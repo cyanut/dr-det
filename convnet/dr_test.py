@@ -1,12 +1,14 @@
+import numpy as np
+
+np.random.seed(59410)
+
 from scipy.misc import imread
 from scipy.ndimage.interpolation import rotate
 import cv2
 import matplotlib.pyplot as plt
-import numpy as np
 from dr_network import get_data_by_class, get_dr_data, split_data
 from dr_iterator import ImageBatchIterator, img_load, img_resize, img_flip, img_rotate, rgb_shift, zmuv_normalization, img_rot90
 from dr_network import DRNeuralNet, qkappa
-from cnn import random
 from lasagne import layers
 from lasagne.updates import adagrad, nesterov_momentum
 from lasagne.nonlinearities import tanh, softmax
@@ -20,11 +22,12 @@ def test_iterator(imgs_by_class, image_size=(372, 372)):
             batch_size=30, 
             image_size=image_size, 
             img_transform_funcs=[img_load,
-                             img_rot90(),
+                             img_rotate(),
                              img_flip(),
                              img_resize(output_size=image_size), 
                              ],
-            batch_transform_funcs=[]
+            batch_transform_funcs=[],
+            is_parallel = True,
             )
     data_iter = data_iter()
     data = next(data_iter)
@@ -109,7 +112,6 @@ def test_network():
             img_transform_funcs = [img_load, img_resize(output_size=img_size)],
             batch_transform_funcs = [],
             is_parallel = False,
-            rand_state = random,
             )
             
 
@@ -121,7 +123,6 @@ def test_network():
             img_transform_funcs = [img_load, img_resize(output_size=img_size)],
             batch_transform_funcs = [],
             is_parallel = False,
-            rand_state = random,
             )
 
     net = lenet5(train_iter, val_iter, save_network_to="/tmp/test.weights")
@@ -130,6 +131,6 @@ def test_network():
 
 if __name__ == "__main__":
     #test_iterator(get_dr_data('../../train-372/3[456]?_*.png', "../../trainLabels.csv"))
-    #test_iterator(get_dr_data('/tmp/train-400/*.png', "../../trainLabels.csv"))
-    #test_iterator(get_mnist_data(), image_size=(25,25))
+    #test_iterator(get_dr_data('../../train-400/*.png', "../../trainLabels.csv"))
+    test_iterator(get_mnist_data(), image_size=(25,25))
     test_network()
