@@ -188,7 +188,8 @@ class DRNeuralNet(NeuralNet):
             for k, f in self.more_params["report_funcs"].items():
                 info[k] = f(predict_y, target_y)
                 if k == self.more_params["select_weight_by"]:
-                    if self.best_performance and info[k] > self.best_performance:
+                        
+                    if self.best_performance is None or info[k] > self.best_performance:
                         self.best_performance = info[k]
                         self.best_weight = [w.get_value() for w in self.get_all_params()]
                         self.best_epoch = epoch
@@ -228,6 +229,15 @@ def _cat_hist(arr, n):
     if hist.shape[0] < n:
         hist = np.hstack([hist, np.zeros(n-hist.shape[0])])
     return hist
+
+def confusion_matrix(predict, target):
+    predict = np.round(predict).astype("int32")
+    n_cat = max(np.max(predict), np.max(target)) + 1
+    confusion_mat = np.zeros((n_cat, n_cat))
+    for p, r in zip(predict, target):
+        confusion_mat[p, r] += 1
+    return confusion_mat
+
 
 def qkappa(predict, target):
     #in case prediction is result of regression, round up

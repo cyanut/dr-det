@@ -8,7 +8,7 @@ import cv2
 import matplotlib.pyplot as plt
 from dr_network import get_data_by_class, get_dr_data, split_data
 from dr_iterator import ImageBatchIterator, img_load, img_resize, img_flip, img_rotate, rgb_shift, zmuv_normalization, img_rot90
-from dr_network import DRNeuralNet, qkappa
+from dr_network import DRNeuralNet, qkappa, confusion_matrix
 from lasagne import layers
 from lasagne.updates import adagrad, nesterov_momentum
 from lasagne.nonlinearities import tanh, softmax
@@ -90,11 +90,12 @@ def lenet5(train_iter, val_iter, save_network_to =None):
         update = adagrad,
         #update_momentum = 0.9,
         regression=False,
-        max_epochs=1000,
+        max_epochs=2,
         verbose=1,
         batch_iterator_train=train_iter,
         batch_iterator_test=val_iter,
-        report_funcs = {"qkappa":qkappa},
+        report_funcs = {"qkappa":qkappa, "confusion_matrix":confusion_matrix},
+        select_weight_by = "qkappa",
         save_network_to=save_network_to,
         )
     return lenet5
@@ -120,13 +121,14 @@ def test_network():
             n_per_category = 50,
             batch_size = 30,
             image_size = (24,24),
-            img_transform_funcs = [img_load, img_resize(output_size=img_size)],
+            img_transform_funcs = [img_load, img_resize(output_size=img_size, transform_type="resize")],
             batch_transform_funcs = [],
             is_parallel = False,
             )
 
     net = lenet5(train_iter, val_iter, save_network_to="/tmp/test.weights")
     net.fit()
+    net.save_network()
             
 
 if __name__ == "__main__":

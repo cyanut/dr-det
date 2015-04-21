@@ -4,7 +4,7 @@ import numpy as np
 import multiprocessing 
 import threading
 import Queue
-from scipy.misc import imread
+from scipy.misc import imread, imresize
 from scipy.linalg import svd
 from scipy.ndimage.interpolation import rotate
 from scipy.ndimage import zoom
@@ -184,8 +184,9 @@ def img_resize(output_size, transform_type="crop"):
             end_coord = [x + y for x,y in zip(start_coord, output_size)]
             img = img[start_coord[0]:end_coord[0], start_coord[1]:end_coord[1]]
         elif transform_type == "resize":
-            zoom_factors = [1,1] + [float(x) / y for x,y in zip(input_size, output_size)]
-            img = zoom(Xb, zoom_factors)
+            #zoom_factors = [1,1] + [float(x) / y for x,y in zip(input_size, output_size)]
+            #img = zoom(img, zoom_factors)
+            img = imresize(img, output_size)
         return img
     return _img_resize
 
