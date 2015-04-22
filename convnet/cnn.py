@@ -2,7 +2,7 @@ from __future__ import print_function
 import numpy as np
 
 #for replication
-np.random.seed(59411)
+np.random.seed(59412)
 
 from lasagne.nonlinearities import softmax, tanh
 from lasagne import layers
@@ -51,13 +51,13 @@ def cnn(train_iterator, test_iterator, batch_size, image_size, save_network_to=N
         conv1_num_filters=16, conv1_filter_size=(5,5), pool1_ds=(4,4),
         #conv1_nonlinearity=tanh,
         #dropout1_p=0.1,
-        conv2_num_filters=64, conv2_filter_size=(5,5), pool2_ds=(4,4),
+        conv2_num_filters=32, conv2_filter_size=(5,5), pool2_ds=(4,4),
         #conv2_nonlinearity=tanh,
         #dropout2_p=0.1,
-        conv3_num_filters=64, conv3_filter_size=(3,3), pool3_ds=(2,2),
+        conv3_num_filters=32, conv3_filter_size=(3,3), pool3_ds=(2,2),
         #conv3_nonlinearity=tanh,
         #dropout3_p=0.2,
-        conv4_num_filters=64, conv4_filter_size=(3,3), pool4_ds=(2,2),
+        conv4_num_filters=32, conv4_filter_size=(3,3), pool4_ds=(2,2),
         #conv4_nonlinearity=tanh,
         #dropout4_p=0.3,
         #shape after conv layers: 128*4*4
@@ -91,7 +91,7 @@ if __name__ == "__main__":
     for x in data:
         np.random.shuffle(x)
     val_data_size = 50
-    train_data, val_data = split_data(data, val_data_size)
+    train_data, val_data = split_data(data, val_data_size, proportional=True)
     img_size = (372, 372)
     batch_size = 20
     train_iter = ImageBatchIterator(\

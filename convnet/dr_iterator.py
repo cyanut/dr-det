@@ -46,7 +46,7 @@ class ImageBatchIterator(BatchIterator):
     def __init__(self, images_by_class, n_per_category, image_size, batch_size, img_transform_funcs=[], batch_transform_funcs=[], is_parallel=False):
         '''
             images_by_class: a list of list of image paths arranged by class, so that images_by_class[n] contains all images of class n
-            n_per_category: number of samples per category after augmentation in each epoch
+            n_per_category: if int, number of samples per category after augmentation in each epoch, else if float, percent of sample in each category
             image_size: tuple of (int, int). Images will be force resized to image_size.
             batch_size: int
             img_transform_funcs: a list of transform functions performed on each image, function takes arguments img: a numpy array of (x, y, n_channel).
@@ -67,12 +67,19 @@ class ImageBatchIterator(BatchIterator):
     def __call__(self):
         #Create equal samples across class for the epoch
         data = []
+
         for img_class, img_list in enumerate(self.images_by_class):
             n_img = len(img_list)
-            n_round = self.n_per_category // n_img
-            n_remainder = self.n_per_category % n_img
+            if type(self.n_per_category) is int:
+                n_round = self.n_per_category // n_img
+                n_remainder = self.n_per_category % n_img
+            elif type(self.n_per_category) is float:
+                n_round = int(self.n_per_category)
+                n_remainder = int(len(img_list) * (self.n_per_category - n_round))
+
             this_img_list = img_list * n_round + \
                 list(np.random.choice(img_list, n_remainder, replace=False))
+
             data += [(x, img_class) for x in this_img_list]
 
 

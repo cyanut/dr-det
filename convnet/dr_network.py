@@ -207,13 +207,13 @@ class DRNeuralNet(NeuralNet):
         with open(self.save_network_to, "wb") as f:
             pickle.dump(self, f, -1)
 
-    def load_best_weights(self):
+    def load_best_weight(self):
         for w1, w2 in zip(self.best_weight, self.get_all_params()):
             w2.set_value(w1)
 
     def predict(self, test_iter):
         res = []
-        for Xb, _ in test_iter():
+        for Xb in test_iter():
             res.append(self.predict_iter_(Xb))
         res = np.vstack(res)
         if self.regression:
@@ -265,6 +265,7 @@ def qkappa(predict, target):
     print("expection matrix")
     print(expection_matrix)
     '''
+    print("target_histogram", target_hist)
     print("confusion matrix")
     print(confusion_matrix)
     print("qkappa:", qkappa)
@@ -297,8 +298,14 @@ def get_dr_data(img_glob, csv_path):
     return get_data_by_class(label_dic)
 
 def split_data(data, val_per_class):
-    val_data = [x[:val_per_class] for x in data]
-    train_data = [x[val_per_class:] for x in data]
+    if type(val_per_class) is int:
+        val_data = [x[:val_per_class] for x in data]
+        train_data = [x[val_per_class:] for x in data]
+    elif type(val_per_class) is float:
+        n_val_data = [int(len(x) * val_per_class) for x in data]
+        val_data = [x[:n_val] for x, n_val in zip(data, n_val_data)]
+        train_data = [x[n_val:] for x, n_val in zip(data, n_val_data)]
+        
     return train_data, val_data
 
 
