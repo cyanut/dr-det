@@ -69,6 +69,7 @@ class DRNeuralNet(NeuralNet):
             accuracy = T.mean(T.eq(predict, y_batch))
         else:
             accuracy = loss_eval
+            predict = predict_proba
 
         all_params = self.get_all_params()
         update_params = self._get_params_for('update')
@@ -136,15 +137,23 @@ class DRNeuralNet(NeuralNet):
             t0 = time.time()
 
             for Xb, yb in self.batch_iterator_train():
+                if self.regression:
+                    yb = yb.astype("float32")
+                    if len(yb.shape) == 1:
+                        yb = yb[:,None]
                 batch_train_loss = self.train_iter_(Xb, yb)
                 train_losses.append(batch_train_loss)
 
             for Xb, yb in self.batch_iterator_test():
+                if self.regression:
+                    yb = yb.astype("float32")
+                    if len(yb.shape) == 1:
+                        yb = yb[:,None]
                 batch_valid_loss, accuracy, predict = self.eval_iter_(Xb, yb)
                 valid_losses.append(batch_valid_loss)
                 valid_accuracies.append(accuracy)
-                target_y.append(np.array(yb))
-                predict_y.append(np.array(predict))
+                target_y.append(np.array(yb).squeeze())
+                predict_y.append(np.array(predict).squeeze())
                 
 
             
@@ -231,8 +240,12 @@ def _cat_hist(arr, n):
     return hist
 
 def confusion_matrix(predict, target):
-    predict = np.round(predict).astype("int32")
-    n_cat = max(np.max(predict), np.max(target)) + 1
+    target = np.round(target).astype("int32")
+    n_cat = np.max(target) + 1
+    print("target:",np.min(target), np.max(target))
+    print("predict:",np.min(predict), np.max(predict))
+    #n_cat = max(np.max(predict), np.max(target)) + 1
+    predict = np.round(predict).clip(0, n_cat-1).astype("int32")
     confusion_mat = np.zeros((n_cat, n_cat))
     for p, r in zip(predict, target):
         confusion_mat[p, r] += 1
@@ -241,11 +254,13 @@ def confusion_matrix(predict, target):
 
 def qkappa(predict, target):
     #in case prediction is result of regression, round up
-    predict = np.round(predict).astype("int32")
-    n_cat = max(np.max(predict), np.max(target)) + 1
+    target = np.round(target).astype("int32")
+    n_cat = np.max(target) + 1
+    #n_cat = max(np.max(predict), np.max(target)) + 1
+    predict = np.round(predict).clip(0, n_cat-1).astype("int32")
     pred_hist = _cat_hist(predict, n_cat)
     target_hist = _cat_hist(target, n_cat)
-    confusion_matrix = np.zeros((n_cat, n_cat))
+    confusion_matrix = np.zeros((n_cat, n_cat), dtype=int)
     for p, r in zip(predict, target):
         confusion_matrix[p, r] += 1
     weight_matrix = np.zeros((n_cat, n_cat))
@@ -265,7 +280,6 @@ def qkappa(predict, target):
     print("expection matrix")
     print(expection_matrix)
     '''
-    print("target_histogram", target_hist)
     print("confusion matrix")
     print(confusion_matrix)
     print("qkappa:", qkappa)
