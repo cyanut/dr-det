@@ -2,7 +2,7 @@ from __future__ import print_function
 import numpy as np
 
 #for replication
-np.random.seed(59410)
+np.random.seed(59411)
 
 from lasagne.nonlinearities import softmax, tanh
 from lasagne import layers
@@ -65,18 +65,18 @@ def cnn(train_iterator, test_iterator, batch_size, image_size, save_network_to=N
         #hidden1_nonlinearity=tanh,
         #dropout5_p=0.5,
         #hidden2_num_units=50,
-        output_num_units=1,
-        #output_num_units=5,
-        #output_nonlinearity = softmax,
-        output_nonlinearity=None,
+        #output_num_units=1,
+        output_num_units=5,
+        output_nonlinearity = softmax,
+        #output_nonlinearity=None,
 
         update_learning_rate=0.01,
         #update_momentum=0.6,
         #update = nesterov_momentum,
         update = adagrad,
 
-        regression=True,
-        #regression=False,
+        #regression=True,
+        regression=False,
         max_epochs=240,
         verbose=1,
         batch_iterator_train=train_iterator,
@@ -102,11 +102,11 @@ if __name__ == "__main__":
             batch_size = batch_size,
             image_size = img_size,
             img_transform_funcs = [img_load,
-                                   img_rot90(),
+                                   img_rotate(),
                                    img_flip(),
                                    img_resize(output_size=img_size)],
             batch_transform_funcs = [],
-            #is_parallel = True,
+            is_parallel = True,
             )
 
     val_iter = ImageBatchIterator(\
